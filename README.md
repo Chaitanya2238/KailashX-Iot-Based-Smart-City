@@ -3,8 +3,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![ESP32](https://img.shields.io/badge/ESP32-CAM-blue)](https://www.espressif.com/)
 [![AWS](https://img.shields.io/badge/AWS-IoT%20%7C%20Lambda-orange)](https://aws.amazon.com/)
+[![Project Report](https://img.shields.io/badge/Report-Google%20Drive-4285F4)](https://drive.google.com/file/d/1l70Bwvudoivbp0cZ2C4cDIXb3lXnLHal/view?usp=sharing)
 
 > An intelligent cloud-based emergency vehicle detection system using ESP32-CAM, AWS Rekognition, and IoT integration.
+
+📄 **[View Detailed Project Report](https://drive.google.com/file/d/1l70Bwvudoivbp0cZ2C4cDIXb3lXnLHal/view?usp=sharing)**
 
 ## 🚨 Overview
 
