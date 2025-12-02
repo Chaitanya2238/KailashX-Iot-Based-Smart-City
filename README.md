@@ -18,16 +18,20 @@ This project implements a smart traffic management system that automatically det
 
 ## 📸 Demo
 
-### System in Action
+### Hardware Setup
 
-<!-- Option 1: Screenshot -->
-![System Demo](docs/demo.png)
+![ESP32-CAM Device Setup](docs/device_cover_photo.jpg)
+*ESP32-CAM with dual LED system - Red LED (GPIO 12) for normal state, Green LED (GPIO 13) for emergency detection*
 
-<!-- Option 2: GIF Animation -->
-![Emergency Detection](docs/demo.gif)
+### System States
 
-<!-- Option 3: YouTube Video -->
-[![Watch Demo](https://img.youtube.com/vi/YOUR_VIDEO_ID/0.jpg)](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)
+#### Normal State - No Emergency Detected
+![Normal State](docs/emergency_vehicle_not_detected.png)
+*Red LED ON - System monitoring traffic, no emergency vehicle detected*
+
+#### Emergency State - Vehicle Detected
+![Emergency Detected](docs/emergency_vehicle_detected.png)
+*Green LED ON - Emergency vehicle (Ambulance/Fire Truck) detected, alert activated for 20 seconds*
 
 ### Serial Monitor Output
 
@@ -82,8 +86,8 @@ This project implements a smart traffic management system that automatically det
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/smart-traffic-ai.git
-cd smart-traffic-ai
+git clone https://github.com/Chaitanya2238/smart-traffic-ai-system.git
+cd smart-traffic-ai-system
 ```
 
 ### 2. Configure Credentials
@@ -175,39 +179,6 @@ graph LR
 | Police      | 80%       | Police, Law Enforcement |
 | Emergency   | 85%       | Emergency, Paramedic, Rescue |
 
-## 🖼️ Adding Screenshots/Videos to README
-
-### Option 1: Local Screenshots
-1. Take screenshots and save to `docs/` folder
-2. Reference in README:
-```markdown
-![Demo](docs/screenshot.png)
-```
-
-### Option 2: GIF Animations
-1. Record screen with [ScreenToGif](https://www.screentogif.com/)
-2. Save as `docs/demo.gif`
-3. Embed:
-```markdown
-![Demo](docs/demo.gif)
-```
-
-### Option 3: YouTube Video
-1. Upload video to YouTube
-2. Get video ID from URL
-3. Embed with thumbnail:
-```markdown
-[![Demo](https://img.youtube.com/vi/VIDEO_ID/maxresdefault.jpg)](https://www.youtube.com/watch?v=VIDEO_ID)
-```
-
-### Option 4: Cloud Storage (Recommended)
-1. Upload to [GitHub Releases](https://github.com/YOUR_REPO/releases)
-2. Or use [Imgur](https://imgur.com) for images
-3. Link directly:
-```markdown
-![Demo](https://i.imgur.com/YOUR_IMAGE.png)
-```
-
 ## 🧪 Testing
 
 ### Test Mode (Images 5-9)
@@ -242,9 +213,8 @@ MIT License - see [LICENSE](LICENSE) file
 
 ## 👤 Author
 
-**Your Name**
-- GitHub: [@YOUR_USERNAME](https://github.com/YOUR_USERNAME)
-- LinkedIn: [Your Profile](https://linkedin.com/in/yourprofile)
+**Chaitanya Gupta**
+- GitHub: [@Chaitanya2238](https://github.com/Chaitanya2238)
 
 ## 🙏 Acknowledgments
 
@@ -254,7 +224,7 @@ MIT License - see [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-Issues? [Open a ticket](https://github.com/YOUR_USERNAME/smart-traffic-ai/issues)
+Issues? [Open a ticket](https://github.com/Chaitanya2238/smart-traffic-ai-system/issues)
 
 ---
 
