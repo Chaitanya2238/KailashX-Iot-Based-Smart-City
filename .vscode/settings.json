@@ -1,0 +1,15 @@
+{
+    "python.linting.enabled": false,
+    "python.linting.pylintEnabled": false,
+    "python.linting.flake8Enabled": false,
+    "python.formatting.provider": "none",
+    "files.associations": {
+        "*.c": "c",
+        "*.cpp": "cpp",
+        "*.h": "c"
+    },
+    "editor.formatOnSave": false,
+    "platformio-ide.autoRebuild": true,
+    "platformio-ide.useDevelopmentPioPkg": false,
+    "platformio-ide.useBuiltinPIOCore": true
+}

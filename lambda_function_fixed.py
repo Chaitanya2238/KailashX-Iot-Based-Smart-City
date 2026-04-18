@@ -10,6 +10,12 @@ iot_client = boto3.client('iot-data', region_name='us-east-1')
 # The MQTT topic we will publish the command to
 COMMAND_TOPIC = 'esp32/commands'
 
+# Service-based topics for logging
+SERVICE_TOPICS = {
+    1: 'esp32/service/1/events',      # Emergency Detection events
+    2: 'esp32/service/2/events'       # Street Lighting events
+}
+
 def lambda_handler(event, context):
     print("=== Lambda Function Started ===")
     print(f"Event keys: {event.keys()}")
@@ -26,6 +32,11 @@ def lambda_handler(event, context):
         if not image_bytes or len(image_bytes) < 1000:
             print("ERROR: Image data too small or invalid")
             return create_error_response(400, 'Image data too small or corrupted')
+        
+        # Validate image size doesn't exceed AWS Rekognition limit (5MB)
+        if len(image_bytes) > 5242880:
+            print(f"ERROR: Image exceeds 5MB limit ({len(image_bytes)} bytes)")
+            return create_error_response(400, 'Image exceeds 5MB limit')
         
         print(f"✓ Image received: {len(image_bytes)} bytes")
         
@@ -168,33 +179,32 @@ def is_valid_jpeg(image_bytes):
 
 def detect_emergency_vehicle(labels):
     """
-    Detect emergency vehicles - OPTIMIZED FOR MOBILE SCREENS
-    More lenient thresholds for screen-displayed images
+    Detect emergency vehicles with STRICT accuracy to prevent false positives
     Returns: dict with is_emergency, vehicle_type, confidence
     """
-    # MOBILE SCREEN OPTIMIZED - Lower thresholds
+    # STRICT emergency vehicle keywords - EXACT matches only
+    # Priority 1.0 = Must have 80% confidence minimum
+    # Priority 0.8 = Must have 90% confidence minimum
     emergency_keywords = {
-        'Ambulance': {'priority': 1.0, 'min_confidence': 70.0},  # Was 85
-        'Fire Truck': {'priority': 1.0, 'min_confidence': 70.0},  # Was 85
-        'Firetruck': {'priority': 1.0, 'min_confidence': 70.0},  # Was 85
-        'Police Car': {'priority': 1.0, 'min_confidence': 70.0},  # Was 85
-        'Emergency Vehicle': {'priority': 1.0, 'min_confidence': 70.0},  # Was 85
-        'Police': {'priority': 0.7, 'min_confidence': 80.0},  # Was 92
-        'Emergency': {'priority': 0.6, 'min_confidence': 85.0},  # Was 95
-        'Paramedic': {'priority': 0.9, 'min_confidence': 75.0},  # Was 88
-        'Fire Engine': {'priority': 1.0, 'min_confidence': 70.0},  # NEW
-        'Rescue': {'priority': 0.8, 'min_confidence': 75.0}  # NEW
+        'Ambulance': {'priority': 1.0, 'min_confidence': 85.0},
+        'Fire Truck': {'priority': 1.0, 'min_confidence': 85.0},
+        'Firetruck': {'priority': 1.0, 'min_confidence': 85.0},
+        'Police Car': {'priority': 1.0, 'min_confidence': 85.0},
+        'Emergency Vehicle': {'priority': 1.0, 'min_confidence': 85.0},
+        'Police': {'priority': 0.7, 'min_confidence': 92.0},  # Stricter for generic terms
+        'Emergency': {'priority': 0.6, 'min_confidence': 95.0},  # Very strict
+        'Paramedic': {'priority': 0.9, 'min_confidence': 88.0}
     }
     
-    # Context labels - more lenient for screens
-    support_labels = ['Vehicle', 'Car', 'Truck', 'Transportation', 'Automobile', 'Screen', 'Electronics', 'Display']
+    # Also track context labels that support emergency vehicle detection
+    support_labels = ['Vehicle', 'Car', 'Truck', 'Transportation', 'Automobile']
     has_vehicle_context = False
     
-    # Check for vehicle OR screen context
+    # Check if there's a vehicle in the image
     for label in labels:
-        if label['Name'] in support_labels and label['Confidence'] >= 65.0:  # Was 80
+        if label['Name'] in support_labels and label['Confidence'] >= 80.0:
             has_vehicle_context = True
-            print(f"  ✓ Context found: {label['Name']} ({label['Confidence']:.2f}%)")
+            print(f"  ✓ Vehicle context found: {label['Name']} ({label['Confidence']:.2f}%)")
             break
     
     best_match = None
@@ -204,18 +214,21 @@ def detect_emergency_vehicle(labels):
         label_name = label['Name']
         confidence = label['Confidence']
         
-        # EXACT keyword matching
+        # EXACT keyword matching (not substring)
         if label_name in emergency_keywords:
             keyword_config = emergency_keywords[label_name]
             priority = keyword_config['priority']
             min_confidence = keyword_config['min_confidence']
             
+            # Calculate weighted score
             score = (confidence * priority) / 100
             
-            print(f"  🎯 Match: {label_name} ({confidence:.2f}% / min:{min_confidence:.1f}% / score:{score:.3f})")
+            print(f"  🎯 EXACT Match: {label_name} (confidence: {confidence:.2f}%, min required: {min_confidence:.1f}%, priority: {priority}, score: {score:.3f})")
             
-            # Accept if meets threshold (more lenient for mobile screens)
+            # STRICT: Must meet minimum confidence AND have vehicle context
             if confidence >= min_confidence:
+                # For high-priority keywords (Ambulance, Fire Truck, Police Car)
+                # we accept them even without additional vehicle context
                 if priority >= 0.9 or has_vehicle_context:
                     if score > highest_score:
                         highest_score = score
@@ -225,7 +238,7 @@ def detect_emergency_vehicle(labels):
                             'confidence': confidence,
                             'detected_label': label_name
                         }
-                        print(f"  ✅ EMERGENCY DETECTED!")
+                        print(f"  ✅ ACCEPTED as emergency vehicle!")
                 else:
                     print(f"  ❌ REJECTED: No vehicle context found")
             else:
@@ -244,13 +257,20 @@ def detect_emergency_vehicle(labels):
 
 
 def send_emergency_command(emergency_result):
-    """Send MQTT command to ESP32 via IoT Core"""
+    """
+    Send MQTT command to ESP32 via IoT Core
+    (SERVICE 1: EMERGENCY VEHICLE DETECTION)
+    
+    This Lambda function is called ONLY when SERVICE_EMERGENCY (1) is active.
+    It processes image frames from ESP32 and detects emergency vehicles using Rekognition.
+    """
     try:
         payload = {
             "command": "EMERGENCY_CLEAR",
             "vehicle_type": emergency_result['vehicle_type'],
             "confidence": round(emergency_result['confidence'], 2),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "service": 1  # Identify this as Service 1 event
         }
         
         print(f"Publishing to MQTT topic: {COMMAND_TOPIC}")

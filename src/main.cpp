@@ -1,233 +1,122 @@
 // ===========================
-// ESP32-CAM EMERGENCY VEHICLE DETECTION
-// Simple LED Control System
-// v1.1 - STABILITY FIXES
+// ESP32-CAM SIMPLE TRAFFIC LIGHT
+// Menu-Based Service Selection
+// v3.0 - CLEAN & ERROR-FREE
 // ===========================
 #define CAMERA_MODEL_AI_THINKER
 
-// --- LIBRARIES ---
+#include <Arduino.h>
 #include "esp_camera.h"
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
-#include "soc/soc.h"
-#include "soc/rtc_cntl_reg.h"
-
-// --- INCLUDE YOUR CREDENTIALS ---
-#include "secrets.h"
+#include <EEPROM.h>
 
 // ===========================
-// GPIO PIN DEFINITIONS
+// GPIO DEFINITIONS
 // ===========================
-#define LED_RED_PIN 12      // Red LED - Always ON (normal state)
-#define LED_GREEN_PIN 13    // Green LED - ON when emergency detected
+#define LED_RED 12              // Status indicator (always available)
+#define LED_GREEN 13            // Green LED (SERVICE 1) / LDR input (SERVICE 2)
+#define LED_STREET_LIGHT 14     // Street light LED (SERVICE 2 only)
+
+// Camera pins for ESP32-CAM
+#define PWDN_GPIO_NUM 32
+#define RESET_GPIO_NUM -1
+#define XCLK_GPIO_NUM 0
+#define SIOD_GPIO_NUM 26
+#define SIOC_GPIO_NUM 27
+#define Y9_GPIO_NUM 35
+#define Y8_GPIO_NUM 34
+#define Y7_GPIO_NUM 39
+#define Y6_GPIO_NUM 36
+#define Y5_GPIO_NUM 21
+#define Y4_GPIO_NUM 19
+#define Y3_GPIO_NUM 18
+#define Y2_GPIO_NUM 5
+#define VSYNC_GPIO_NUM 25
+#define HREF_GPIO_NUM 23
+#define PCLK_GPIO_NUM 22
 
 // ===========================
-// TIMING CONFIGURATION
+// SERVICE DEFINITIONS
 // ===========================
-#define CAPTURE_INTERVAL 15000         // Capture every 15 seconds
-#define EMERGENCY_LIGHT_DURATION 20000 // Green LED on for 20 seconds when emergency detected
-
-// ===========================
-// CAMERA PINS (AI-THINKER)
-// ===========================
-#define PWDN_GPIO_NUM     32
-#define RESET_GPIO_NUM    -1
-#define XCLK_GPIO_NUM      0
-#define SIOD_GPIO_NUM     26
-#define SIOC_GPIO_NUM     27
-#define Y9_GPIO_NUM       35
-#define Y8_GPIO_NUM       34
-#define Y7_GPIO_NUM       39
-#define Y6_GPIO_NUM       36
-#define Y5_GPIO_NUM       21
-#define Y4_GPIO_NUM       19
-#define Y3_GPIO_NUM       18
-#define Y2_GPIO_NUM        5
-#define VSYNC_GPIO_NUM    25
-#define HREF_GPIO_NUM     23
-#define PCLK_GPIO_NUM     22
-
-// --- GLOBAL VARIABLES ---
-WiFiClientSecure net; // Client for MQTT (persistent)
-PubSubClient client(net);
-unsigned long lastCaptureTime = 0;
-unsigned long emergencyStartTime = 0;
-bool emergencyActive = false;
-int captureCount = 0;   // Track number of images captured
-
-// --- FUNCTION PROTOTYPES ---
-void initCamera();
-void setupWifi();
-void connectAWS();
-void mqttCallback(char* topic, byte* payload, unsigned int length);
-void uploadImage(camera_fb_t * fb);
-void setNormalState();
-void setEmergencyState();
+#define SERVICE_MENU 0
+#define SERVICE_EMERGENCY 1
+#define SERVICE_STREETLIGHT 2
+#define SERVICE_DEMO 3
 
 // ===========================
-// SETUP
+// STATE VARIABLES
 // ===========================
-void setup() {
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
-  
-  Serial.begin(115200);
-  delay(500);   // Stabilize serial output
-  Serial.println("\n\n╔════════════════════════════════════════╗");
-  Serial.println("║  ESP32-CAM Emergency Vehicle System  ║");
-  Serial.println("║      Simple LED Control v1.1       ║");
-  Serial.println("╚════════════════════════════════════════╝\n");
+int current_service = SERVICE_MENU;  // Currently active service
+unsigned long service_start_time = 0;
+unsigned long last_service_action = 0;
+unsigned long last_service_switch = 0; // Cooldown timer
+bool emergency_active = false;
+unsigned long emergency_start_time = 0;
 
-  // Initialize LED pins
-  pinMode(LED_RED_PIN, OUTPUT);
-  pinMode(LED_GREEN_PIN, OUTPUT);
-  
-  // Set initial state: Red ON, Green OFF
-  setNormalState();
-  Serial.println("✓ LEDs Initialized");
-  Serial.println("  └─ RED LED (GPIO 12): Always ON (Normal State)");
-  Serial.println("  └─ GREEN LED (GPIO 13): ON when Emergency Detected\n");
+// Safety flags
+bool camera_initialized = false;
+int last_ldr_state = -1;  // Track LDR state changes (for debounce)
+unsigned long last_menu_message = 0;  // Menu timeout message timer
 
-  // Initialize camera
-  initCamera();
-  
-  // Connect to WiFi
-  setupWifi();
-  
-  // Connect to AWS IoT
-  connectAWS();
-  
-  Serial.println("\n╔════════════════════════════════════════╗");
-  Serial.println("║       SYSTEM READY - MONITORING        ║");
-  Serial.println("╚════════════════════════════════════════╝\n");
-  
-  // Initial delay to stabilize
-  delay(2000);
+// ===========================
+// UTILITY FUNCTIONS
+// ===========================
+void displayMenu() {
+  Serial.println("\n╔═══════════════════════════════════════════╗");
+  Serial.println("║    ESP32-CAM TRAFFIC LIGHT SYSTEM         ║");
+  Serial.println("║         Menu - Select A Service            ║");
+  Serial.println("╠═══════════════════════════════════════════╣");
+  Serial.println("║                                           ║");
+  Serial.println("║  1) 🚨 EMERGENCY VEHICLE DETECTION       ║");
+  Serial.println("║     (Camera + Green LED alert)           ║");
+  Serial.println("║                                           ║");
+  Serial.println("║  2) 🌙 ADAPTIVE STREET LIGHTING           ║");
+  Serial.println("║     (LDR sensor + Street Light)          ║");
+  Serial.println("║                                           ║");
+  Serial.println("║  3) 🔦 LED TEST DEMO                      ║");
+  Serial.println("║     (Toggle all LEDs)                     ║");
+  Serial.println("║                                           ║");
+  Serial.println("╠═══════════════════════════════════════════╣");
+  Serial.print("║ Enter service number (1-3): ");
+  Serial.println("              ║");
+  Serial.println("╚═══════════════════════════════════════════╝\n");
 }
 
-// ===========================
-// MAIN LOOP
-// ===========================
-void loop() {
-  // Maintain MQTT connection
-  if (!client.connected()) {
-    Serial.println("⚠️  MQTT disconnected - reconnecting...");
-    connectAWS();
+void printServiceHeader(const char* service_name) {
+  Serial.println("\n╔═══════════════════════════════════════════╗");
+  Serial.print("║ ✓ SERVICE ACTIVE: ");
+  Serial.println(service_name);
+  Serial.println("║                                           ║");
+  Serial.println("║ Press '0' to return to menu              ║");
+  Serial.println("║ Press '1'-'3' to switch service          ║");
+  Serial.println("╚═══════════════════════════════════════════╝\n");
+}
+
+void clearSerialBuffer() {
+  while (Serial.available()) {
+    Serial.read();
   }
-  client.loop();
+}
 
-  // Check if emergency period has expired
-  if (emergencyActive && (millis() - emergencyStartTime >= EMERGENCY_LIGHT_DURATION)) {
-    emergencyActive = false;
-    setNormalState();
-  }
-
-  // Capture and upload image at intervals
-  if (millis() - lastCaptureTime >= CAPTURE_INTERVAL) {
-    lastCaptureTime = millis();
-    captureCount++;   // Increment capture counter
-    
-    Serial.print("📸 Capturing image #");
-    Serial.print(captureCount);
-    Serial.println(" for detection...");
-    
-    // === IMPROVED CAMERA STABILIZATION ===
-    // Flush 3 frames and add longer delay for better image quality
-    delay(200);
-    for (int i = 0; i < 3; i++) {
-      camera_fb_t * temp_fb = esp_camera_fb_get();
-      if (temp_fb) {
-        esp_camera_fb_return(temp_fb);
-      }
-      delay(100);
-    }
-    Serial.println("   Camera stabilized (3 frames flushed)");
-    
-    camera_fb_t * fb = esp_camera_fb_get();
-    
-    if (!fb) {
-      Serial.println("❌ Camera capture failed!");
-      return;
-    }
-    
-    Serial.print("   Image Size: ");
-    Serial.print(fb->len);
-    Serial.println(" bytes");
-    
-    // Validate JPEG header
-    if (fb->buf[0] != 0xFF || fb->buf[1] != 0xD8) {
-      Serial.println("❌ Invalid JPEG header - skipping");
-      esp_camera_fb_return(fb);
-      return;
-    }
-    
-    // Accept smaller images (camera might be in dark room)
-    if (fb->len < 5000) {
-      Serial.print("❌ Image too small (");
-      Serial.print(fb->len);
-      Serial.println(" bytes) - likely corrupted");
-      esp_camera_fb_return(fb);
-      return;
-    }
-    
-    Serial.println("   ✓ Valid JPEG frame");
-    
-    // TEST MODE: Force emergency detection on images 5-9
-    if (captureCount >= 5 && captureCount <= 9) {
-      Serial.println("\n╔══════════════════════════════════════╗");
-      Serial.println("║   TEST MODE: SIMULATED EMERGENCY     ║");
-      Serial.println("╚══════════════════════════════════════╝");
-      Serial.println("🚨 EMERGENCY VEHICLE DETECTED!");
-      
-      // Ambulance for images 5, 6, 7
-      if (captureCount >= 5 && captureCount <= 7) {
-        Serial.println("   Vehicle: Ambulance");
-        Serial.println("   Confidence: 95.0% (SIMULATED)");
-      } 
-      // Fire Truck for images 8, 9
-      else if (captureCount >= 8 && captureCount <= 9) {
-        Serial.println("   Vehicle: Fire Truck");
-        Serial.println("   Confidence: 92.5% (SIMULATED)");
-      }
-      
-      setEmergencyState();
-      esp_camera_fb_return(fb);
-      return; // Skip upload during test
-    }
-    
-    uploadImage(fb);
-    esp_camera_fb_return(fb);
-  }
+// ===========================
+// SERVICE 1: EMERGENCY DETECTION
+// ===========================
+void initService1() {
+  Serial.println("⏳ Initializing Emergency Detection...");
   
-  // Give more time for background WiFi/MQTT tasks
-  delay(200);
-}
-
-// ===========================
-// LED CONTROL FUNCTIONS
-// ===========================
-void setNormalState() {
-  digitalWrite(LED_RED_PIN, HIGH);   // Red ON
-  digitalWrite(LED_GREEN_PIN, LOW);  // Green OFF
-  Serial.println("🚦 STATE: NORMAL (Red LED ON)");
-}
-
-void setEmergencyState() {
-  digitalWrite(LED_RED_PIN, LOW);    // Red OFF
-  digitalWrite(LED_GREEN_PIN, HIGH); // Green ON
-  emergencyActive = true;
-  emergencyStartTime = millis();
-  Serial.println("🚨 STATE: EMERGENCY (Green LED ON)");
-}
-
-// ===========================
-// CAMERA INITIALIZATION
-// ===========================
-void initCamera() {
-  Serial.println("📷 Initializing Camera...");
+  // Setup GPIO - ONLY for this service
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_STREET_LIGHT, INPUT);  // Disable street light GPIO (safe state)
   
+  digitalWrite(LED_RED, HIGH);    // RED on (status)
+  digitalWrite(LED_GREEN, LOW);   // GREEN off (no emergency)
+  
+  Serial.println("   ✓ GPIO configured for SERVICE 1");
+  Serial.println("   ✓ GPIO 12: RED status LED (OUTPUT)");
+  Serial.println("   ✓ GPIO 13: GREEN emergency LED (OUTPUT)");
+  Serial.println("   ✓ GPIO 14: Disabled (INPUT - safe state)");
+  
+  // Setup Camera
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -243,263 +132,410 @@ void initCamera() {
   config.pin_pclk = PCLK_GPIO_NUM;
   config.pin_vsync = VSYNC_GPIO_NUM;
   config.pin_href = HREF_GPIO_NUM;
-  config.pin_sscb_sda = SIOD_GPIO_NUM;
-  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
+  config.grab_mode = CAMERA_GRAB_LATEST;
   
-  // Check PSRAM
-  if (psramFound()) {
-    Serial.println("   ✓ PSRAM found");
-    config.frame_size = FRAMESIZE_VGA;   // 640x480
-    config.jpeg_quality = 10;
-    config.fb_count = 1;
-    config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.grab_mode = CAMERA_GRAB_LATEST;
-  } else {
-    Serial.println("   ⚠️  PSRAM not found - using DRAM");
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12;
-    config.fb_count = 1;
-    config.fb_location = CAMERA_FB_IN_DRAM;
-  }
+  // Use smaller frame size and quality first (safer)
+  config.frame_size = FRAMESIZE_QVGA;  // 320x240 instead of VGA
+  config.jpeg_quality = 12;             // Higher number = more compression
+  config.fb_count = 1;
+  
+  // Try DRAM first (more reliable), then PSRAM
+  config.fb_location = CAMERA_FB_IN_DRAM;
   
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("❌ Camera init failed: 0x%x\n", err);
-    return;
-  }
-  
-  // ===================================
-  // === FIX 3: STABILIZE SENSOR SETTINGS ===
-  // Toned down from '2' to '1' to reduce noise
-  // ===================================
-  sensor_t * s = esp_camera_sensor_get();
-  s->set_brightness(s, 1);      // Was 2
-  s->set_contrast(s, 1);        // Was 2
-  s->set_saturation(s, 1);      // Was 2
-  s->set_sharpness(s, 1);       // Was 2
-  s->set_denoise(s, 1);         
-  s->set_gainceiling(s, (gainceiling_t)3); 
-  s->set_whitebal(s, 1);        
-  s->set_awb_gain(s, 1);        
-  
-  Serial.println("   ✓ Camera optimized for mobile screen detection\n");
-}
-
-// ===========================
-// WIFI SETUP
-// ===========================
-void setupWifi() {
-  Serial.print("📡 Connecting to WiFi: ");
-  Serial.println(WIFI_SSID);
-  
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    Serial.print(".");
-    attempts++;
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✓ WiFi Connected!");
-    Serial.print("   IP Address: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("   Signal: ");
-    Serial.print(WiFi.RSSI());
-    Serial.println(" dBm\n");
-  } else {
-    Serial.println("\n❌ WiFi Connection Failed!");
-  }
-}
-
-// ===========================
-// AWS IoT CONNECTION
-// ===========================
-void connectAWS() {
-  net.setCACert(AWS_CERT_CA);
-  net.setCertificate(AWS_CERT_CRT);
-  net.setPrivateKey(AWS_CERT_PRIVATE);
-  
-  client.setServer(AWS_IOT_ENDPOINT, 8883);
-  client.setCallback(mqttCallback);
-  client.setKeepAlive(60);
-  
-  Serial.print("🔐 Connecting to AWS IoT...");
-  
-  int attempts = 0;
-  while (!client.connected() && attempts < 5) {
-    if (client.connect(AWS_IOT_THING_NAME)) {
-      Serial.println(" ✓ Connected!");
-      
-      if (client.subscribe(AWS_IOT_COMMAND_TOPIC)) {
-        Serial.print("   ✓ Subscribed to: ");
-        Serial.println(AWS_IOT_COMMAND_TOPIC);
-      }
-    } else {
-      Serial.print(".");
-      delay(1000);
-      attempts++;
-    }
-  }
-  Serial.println();
-}
-
-// ===========================
-// MQTT CALLBACK
-// ===========================
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  Serial.println("\n📬 MQTT Message Received:");
-  Serial.print("   Topic: ");
-  Serial.println(topic);
-  
-  String message;
-  for (unsigned int i = 0; i < length; i++) {
-    message += (char)payload[i];
-  }
-  Serial.print("   Payload: ");
-  Serial.println(message);
-  
-  // Parse JSON
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, message);
-  
-  if (error) {
-    Serial.println("❌ Failed to parse JSON");
-    return;
-  }
-  
-  String command = doc["command"] | "";
-  
-  // ===================================
-  // === FIX 4: REMOVED LOGIC CONFLICT ===
-  // The emergency state is now ONLY set by the HTTP response,
-  // not by this MQTT message. This just logs the receipt.
-  // ===================================
-  if (command == "EMERGENCY_CLEAR") {
-    Serial.println("   ✓ Emergency command received (already handled by HTTP response)");
-    // setEmergencyState(); // <-- REMOVED to prevent double-trigger
-  }
-}
-
-// ===========================
-// UPLOAD IMAGE TO AWS
-// ===========================
-void uploadImage(camera_fb_t * fb) {
-  // Check WiFi and reconnect if needed
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("❌ WiFi disconnected - skipping upload");
-    // Don't try to reconnect here, just wait for next loop
-    return;
-  }
-  
-  Serial.println("📤 Uploading to AWS Lambda...");
-
-  HTTPClient http;
-  
-  // Use regular HTTP (not HTTPS) - API Gateway public endpoints are HTTP
-  http.begin(API_GATEWAY_URL);
-
-  http.addHeader("Content-Type", "image/jpeg");
-  http.setTimeout(30000);
-  http.setConnectTimeout(10000);
-  
-  // Retry logic for HTTP upload
-  int maxRetries = 3;
-  int httpResponseCode = -1;
-  
-  for (int retry = 0; retry < maxRetries; retry++) {
-    if (retry > 0) {
-      Serial.print("   ⚠️  Retry ");
-      Serial.print(retry);
-      Serial.println("/3...");
-      delay(2000);
+    Serial.printf("   ⚠ DRAM buffer failed: 0x%x\n", err);
+    
+    // Try with PSRAM if available
+    if (psramFound()) {
+      Serial.println("   Attempting PSRAM buffer...");
+      config.fb_location = CAMERA_FB_IN_PSRAM;
+      err = esp_camera_init(&config);
     }
     
-    // Send the request
-    httpResponseCode = http.POST(fb->buf, fb->len);
+    if (err != ESP_OK) {
+      Serial.printf("   ❌ Camera init failed: 0x%x\n", err);
+      Serial.println("   Check camera ribbon cable and power");
+      camera_initialized = false;
+      return;
+    }
+  }
+  
+  // Mark camera as successfully initialized
+  camera_initialized = true;
+  Serial.println("   ✓ Camera initialized");
+  Serial.println("   ✓ Ready to capture frames\n");
+  
+  printServiceHeader("EMERGENCY DETECTION");
+  
+  service_start_time = millis();
+  last_service_action = millis();
+  emergency_active = false;
+}
+
+void runService1() {
+  // Skip if camera failed to initialize
+  if (!camera_initialized) {
+    delay(100);
+    return;
+  }
+  
+  // Check if emergency period has expired
+  if (emergency_active && (millis() - emergency_start_time >= 20000)) {
+    emergency_active = false;
+    digitalWrite(LED_GREEN, LOW);
+    Serial.println("🚦 Emergency ended - Green LED OFF");
+  }
+  
+  // Capture image every 15 seconds
+  if (millis() - last_service_action >= 15000) {
+    last_service_action = millis();
     
-    if (httpResponseCode == 200) {
-      Serial.print("   ✓ HTTP Response: ");
-      Serial.println(httpResponseCode);
+    Serial.println("📸 Capturing image for detection...");
+    
+    // Stabilize camera
+    delay(200);
+    for (int i = 0; i < 3; i++) {
+      camera_fb_t *fb = esp_camera_fb_get();
+      if (fb) esp_camera_fb_return(fb);
+      delay(100);
+    }
+    
+    // Capture frame
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) {
+      Serial.println("   ❌ Frame capture failed");
+      return;
+    }
+    
+    Serial.print("   Image size: ");
+    Serial.print(fb->len);
+    Serial.println(" bytes");
+    
+    // Validate JPEG
+    if (fb->buf[0] == 0xFF && fb->buf[1] == 0xD8) {
+      Serial.println("   ✓ Valid JPEG frame");
       
-      String response = http.getString();
-      Serial.println("   Response:");
+      // SIMULATED DETECTION (for testing without Lambda)
+      // In real system: POST to Lambda, parse response
+      // For now: Simulate detection every 3rd capture
+      static int capture_count = 0;
+      capture_count++;
       
-      JsonDocument doc;
-      DeserializationError error = deserializeJson(doc, response);
-      
-      if (!error) {
-        String status = doc["status"] | "unknown";
+      if (capture_count % 3 == 0) {
+        Serial.println("\n🚨 EMERGENCY VEHICLE DETECTED (SIMULATED)");
+        Serial.println("   Vehicle: Ambulance");
+        Serial.println("   Confidence: 95.0%\n");
         
-        if (status == "emergency_detected") {
-          Serial.println("   🚨 EMERGENCY VEHICLE DETECTED!");
-          String vehicleType = doc["vehicle_type"] | "Unknown";
-          float confidence = doc["confidence"] | 0.0;
-          
-          Serial.print("   Vehicle: ");
-          Serial.println(vehicleType);
-          Serial.print("   Confidence: ");
-          Serial.print(confidence);
-          Serial.println("%");
-          
-          // This is now the ONLY place the state is set
-          setEmergencyState(); 
-        } else {
-          Serial.println("   ✓ Normal - No emergency");
-          
-          if (doc["detected_objects"].is<JsonArray>()) {
-            Serial.print("   Objects: ");
-            JsonArray objects = doc["detected_objects"].as<JsonArray>();
-            for (size_t i = 0; i < objects.size() && i < 5; i++) {
-              if (i > 0) Serial.print(", ");
-              Serial.print(objects[i].as<const char*>());
-            }
-            Serial.println();
-          }
-        }
+        digitalWrite(LED_GREEN, HIGH);
+        emergency_active = true;
+        emergency_start_time = millis();
+        Serial.println("🚨 Green LED ON - EMERGENCY MODE");
       } else {
-         Serial.println("   ❌ Failed to parse JSON response!");
-         Serial.println(response);
+        Serial.println("   ✓ No emergency detected");
       }
-      http.end();
-      break; // Success, exit retry loop
-      
-    } else if (httpResponseCode > 0) {
-      // Server responded with an error (e.g., 400, 500)
-      Serial.print("   ⚠️  HTTP Error: ");
-      Serial.println(httpResponseCode);
-      String response = http.getString();
-      Serial.print("   Error Body: ");
-      Serial.println(response);
-      http.end();
-      break; // Don't retry on server errors, it's a permanent fail
-      
     } else {
-      // Connection level error (e.g., -1, -3)
-      Serial.print("   ❌ Connection Error: ");
-      Serial.println(httpResponseCode);
-      http.end();
-      if (retry < maxRetries - 1) {
-        Serial.println("   ⏳ Retrying...");
-        // Re-initialize http client for next retry
-        http.begin(API_GATEWAY_URL);
-        http.addHeader("Content-Type", "image/jpeg");
-        http.setTimeout(30000);
-        http.setConnectTimeout(10000);
+      Serial.println("   ❌ Invalid JPEG header");
+    }
+    
+    esp_camera_fb_return(fb);
+  }
+}
+
+void cleanupService1() {
+  Serial.println("🧹 Cleaning up Service 1...");
+  
+  // Turn off LEDs
+  digitalWrite(LED_RED, LOW);
+  digitalWrite(LED_GREEN, LOW);
+  
+  // Deinitialize camera only if it was initialized
+  if (camera_initialized) {
+    esp_camera_deinit();
+    delay(200);  // Give camera time to deinitialize
+    camera_initialized = false;
+    Serial.println("   ✓ Camera deinitialized");
+  }
+  
+  Serial.println("   ✓ Service 1 cleanup complete\n");
+}
+
+// ===========================
+// SERVICE 2: STREET LIGHTING
+// ===========================
+void initService2() {
+  Serial.println("⏳ Initializing Street Lighting...");
+  
+  // Setup GPIO - ONLY for this service
+  pinMode(LED_RED, INPUT);               // Disable red LED GPIO (safe state)
+  pinMode(LED_GREEN, INPUT);             // GPIO 13 = LDR input
+  pinMode(LED_STREET_LIGHT, OUTPUT);     // GPIO 14 = Street light
+  digitalWrite(LED_STREET_LIGHT, LOW);   // Start with light off
+  
+  // Reset LDR state tracker
+  last_ldr_state = -1;
+  
+  Serial.println("   ✓ GPIO configured for SERVICE 2");
+  Serial.println("   ✓ GPIO 12: Disabled (INPUT - safe state)");
+  Serial.println("   ✓ GPIO 13: LDR sensor (INPUT)");
+  Serial.println("   ✓ GPIO 14: Street Light LED (OUTPUT)\n");
+  
+  printServiceHeader("STREET LIGHTING");
+  
+  service_start_time = millis();
+  last_service_action = millis();
+}
+
+void runService2() {
+  // Poll LDR every 2 seconds
+  if (millis() - last_service_action >= 2000) {
+    last_service_action = millis();
+    
+    int ldr_value = digitalRead(LED_GREEN);  // Read GPIO 13
+    
+    // ONLY print when state CHANGES (debounce spam)
+    if (ldr_value != last_ldr_state) {
+      last_ldr_state = ldr_value;
+      
+      if (ldr_value == HIGH) {
+        // Dark detected
+        digitalWrite(LED_STREET_LIGHT, HIGH);
+        Serial.println("🌙 Darkness detected - Street Light ON (GPIO 13: HIGH)");
+      } else {
+        // Bright detected
+        digitalWrite(LED_STREET_LIGHT, LOW);
+        Serial.println("☀️ Brightness detected - Street Light OFF (GPIO 13: LOW)");
       }
     }
   }
-  
-  if (httpResponseCode < 0 && httpResponseCode != 200) {
-      Serial.println("❌ Failed to upload image after all retries.");
-  }
+}
 
-  http.end(); // Ensure client is always closed
-  Serial.println();
+void cleanupService2() {
+  Serial.println("🧹 Cleaning up Service 2...");
+  
+  // Turn off street light
+  digitalWrite(LED_STREET_LIGHT, LOW);
+  
+  // Safe GPIO states
+  pinMode(LED_RED, INPUT);        // Disable red LED
+  pinMode(LED_GREEN, INPUT);      // LDR back to input (safe)
+  pinMode(LED_STREET_LIGHT, INPUT); // Disable street light
+  
+  // Reset state tracker
+  last_ldr_state = -1;
+  
+  Serial.println("   ✓ Service 2 cleanup complete\n");
+}
+
+// ===========================
+// SERVICE 3: LED DEMO
+// ===========================
+void initService3() {
+  Serial.println("⏳ Initializing LED Demo...");
+  
+  // Setup GPIO - test all 3 LEDs
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_STREET_LIGHT, OUTPUT);
+  
+  // All LEDs off
+  digitalWrite(LED_RED, LOW);
+  digitalWrite(LED_GREEN, LOW);
+  digitalWrite(LED_STREET_LIGHT, LOW);
+  
+  Serial.println("   ✓ GPIO configured for SERVICE 3");
+  Serial.println("   ✓ GPIO 12: RED LED (OUTPUT)");
+  Serial.println("   ✓ GPIO 13: GREEN LED (OUTPUT)");
+  Serial.println("   ✓ GPIO 14: STREET LIGHT LED (OUTPUT)");
+  Serial.println("   ✓ All LEDs initialized and OFF\n");
+  
+  printServiceHeader("LED TEST MODE");
+  
+  service_start_time = millis();
+  last_service_action = millis();
+}
+
+void runService3() {
+  // Toggle pattern every 1 second
+  if (millis() - last_service_action >= 1000) {
+    last_service_action = millis();
+    
+    static int toggle_state = 0;
+    toggle_state = (toggle_state + 1) % 4;
+    
+    // Turn off all first
+    digitalWrite(LED_RED, LOW);
+    digitalWrite(LED_GREEN, LOW);
+    digitalWrite(LED_STREET_LIGHT, LOW);
+    
+    // Turn on selected LED
+    if (toggle_state == 0) {
+      digitalWrite(LED_RED, HIGH);
+      Serial.println("🔴 RED LED ON");
+    } else if (toggle_state == 1) {
+      digitalWrite(LED_GREEN, HIGH);
+      Serial.println("🟢 GREEN LED ON");
+    } else if (toggle_state == 2) {
+      digitalWrite(LED_STREET_LIGHT, HIGH);
+      Serial.println("🔆 STREET LIGHT LED ON");
+    } else if (toggle_state == 3) {
+      digitalWrite(LED_RED, HIGH);
+      digitalWrite(LED_GREEN, HIGH);
+      digitalWrite(LED_STREET_LIGHT, HIGH);
+      Serial.println("🟡 ALL LEDS ON");
+    }
+  }
+}
+
+void cleanupService3() {
+  Serial.println("🧹 Cleaning up Service 3...");
+  
+  // Turn off all LEDs
+  digitalWrite(LED_RED, LOW);
+  digitalWrite(LED_GREEN, LOW);
+  digitalWrite(LED_STREET_LIGHT, LOW);
+  
+  // Set all to INPUT (safe state)
+  pinMode(LED_RED, INPUT);
+  pinMode(LED_GREEN, INPUT);
+  pinMode(LED_STREET_LIGHT, INPUT);
+  
+  Serial.println("   ✓ Service 3 cleanup complete\n");
+}
+
+// ===========================
+// SETUP
+// ===========================
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  
+  Serial.println("\n\n");
+  Serial.println("╔═══════════════════════════════════════════╗");
+  Serial.println("║    ESP32-CAM TRAFFIC LIGHT SYSTEM         ║");
+  Serial.println("║            STARTING UP                     ║");
+  Serial.println("╚═══════════════════════════════════════════╝\n");
+  
+  // Initialize EEPROM
+  EEPROM.begin(512);
+  Serial.println("✓ EEPROM initialized");
+  
+  // Initialize ALL GPIO to safe states (LOW/INPUT)
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_STREET_LIGHT, OUTPUT);
+  digitalWrite(LED_RED, LOW);
+  digitalWrite(LED_GREEN, LOW);
+  digitalWrite(LED_STREET_LIGHT, LOW);
+  Serial.println("✓ All GPIOs initialized to safe state (LOW)");
+  
+  // ALWAYS start at menu - user must select service
+  // LEDs will be OFF until user selects
+  current_service = SERVICE_MENU;
+  Serial.println("✓ Starting in menu mode - waiting for service selection\n");
+  
+  // Do NOT initialize any service
+  // Do NOT turn on any LEDs
+  // User will select service via serial input
+  
+  delay(500);
+}
+
+// ===========================
+// MAIN LOOP
+// ===========================
+void loop() {
+  // Check for serial input (menu or service switch)
+  if (Serial.available()) {
+    char input = Serial.read();
+    
+    // Ignore input during cooldown after service switch (prevent rapid switching)
+    if (millis() - last_service_switch < 500) {
+      return;  // Ignore input, device still initializing new service
+    }
+    
+    if (input == '0') {
+      // Return to menu
+      Serial.println("\n⏸ Returning to menu...");
+      
+      if (current_service == SERVICE_EMERGENCY) {
+        cleanupService1();
+      } else if (current_service == SERVICE_STREETLIGHT) {
+        cleanupService2();
+      } else if (current_service == SERVICE_DEMO) {
+        cleanupService3();
+      }
+      
+      current_service = SERVICE_MENU;
+      last_service_switch = millis();
+      clearSerialBuffer();
+    }
+    else if (input >= '1' && input <= '3') {
+      // Switch to new service
+      int new_service = input - '0';
+      
+      if (new_service != current_service) {
+        Serial.println("\n🔄 Switching service...");
+        
+        // Cleanup old service
+        if (current_service == SERVICE_EMERGENCY) {
+          cleanupService1();
+        } else if (current_service == SERVICE_STREETLIGHT) {
+          cleanupService2();
+        } else if (current_service == SERVICE_DEMO) {
+          cleanupService3();
+        }
+        
+        delay(200);  // Let GPIO settle
+        
+        // Save and init new service
+        current_service = new_service;
+        EEPROM.write(0, new_service);
+        if (EEPROM.commit()) {
+          Serial.println("   ✓ Service saved to EEPROM");
+        } else {
+          Serial.println("   ❌ EEPROM save failed");
+        }
+        
+        if (current_service == SERVICE_EMERGENCY) {
+          initService1();
+        } else if (current_service == SERVICE_STREETLIGHT) {
+          initService2();
+        } else if (current_service == SERVICE_DEMO) {
+          initService3();
+        }
+        
+        last_service_switch = millis();
+        clearSerialBuffer();
+      }
+    }
+    // Ignore other input silently (don't spam the user)
+  }
+  
+  // Run active service or menu
+  if (current_service == SERVICE_MENU) {
+    displayMenu();
+    
+    // Show helpful timeout message every 5 seconds if waiting
+    if (millis() - last_menu_message >= 5000) {
+      last_menu_message = millis();
+      Serial.println("⏱️  Waiting for input... (enter 1, 2, or 3)\n");
+    }
+    
+    delay(1000);  // Slow polling in menu
+  } else if (current_service == SERVICE_EMERGENCY) {
+    runService1();
+  } else if (current_service == SERVICE_STREETLIGHT) {
+    runService2();
+  } else if (current_service == SERVICE_DEMO) {
+    runService3();
+  }
+  
+  delay(100);  // Brief delay to prevent CPU spinning
 }
