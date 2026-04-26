@@ -17,6 +17,7 @@
 #define LED_STREET_LIGHT 14     // Street light LED (SERVICE 2 only)
 #define PIN_TDS 4               // TDS Water Sensor Analog Input (SERVICE 4)
 #define PIN_BUZZER 2            // Buzzer for Service 4 alerts
+#define PIN_MQ135 15            // MQ135 Air Quality Analog Input (SERVICE 3)
 
 // Camera pins for ESP32-CAM
 #define PWDN_GPIO_NUM 32
@@ -42,7 +43,7 @@
 #define SERVICE_MENU 0
 #define SERVICE_EMERGENCY 1
 #define SERVICE_STREETLIGHT 2
-#define SERVICE_DEMO 3
+#define SERVICE_AIRQUALITY 3
 #define SERVICE_WATERQUALITY 4
 
 // ===========================
@@ -75,8 +76,8 @@ void displayMenu() {
   Serial.println("║  2) 🌙 ADAPTIVE STREET LIGHTING           ║");
   Serial.println("║     (LDR sensor + Street Light)          ║");
   Serial.println("║                                           ║");
-  Serial.println("║  3) 🔦 LED TEST DEMO                      ║");
-  Serial.println("║     (Toggle all LEDs)                     ║");
+  Serial.println("║  3) 🌬️ AIR QUALITY MONITORING             ║");
+  Serial.println("║     (MQ135 Gas Sensor)                    ║");
   Serial.println("║                                           ║");
   Serial.println("║  4) 💧 WATER QUALITY MONITORING           ║");
   Serial.println("║     (TDS Purity Sensor)                   ║");
@@ -340,61 +341,73 @@ void cleanupService2() {
 }
 
 // ===========================
-// SERVICE 3: LED DEMO
+// SERVICE 3: AIR QUALITY MONITORING
 // ===========================
 void initService3() {
-  Serial.println("⏳ Initializing LED Demo...");
+  Serial.println("⏳ Initializing Air Quality Service...");
   
-  // Setup GPIO - test all 3 LEDs
+  // Setup GPIO - ONLY for this service
+  pinMode(PIN_MQ135, INPUT);
+  pinMode(PIN_BUZZER, OUTPUT);
   pinMode(LED_RED, OUTPUT);
-  pinMode(LED_GREEN, OUTPUT);
-  pinMode(LED_STREET_LIGHT, OUTPUT);
+  pinMode(LED_GREEN, INPUT);         // Safe state
+  pinMode(LED_STREET_LIGHT, INPUT);  // Safe state
   
-  // All LEDs off
   digitalWrite(LED_RED, LOW);
-  digitalWrite(LED_GREEN, LOW);
-  digitalWrite(LED_STREET_LIGHT, LOW);
+  digitalWrite(PIN_BUZZER, LOW);
   
   Serial.println("   ✓ GPIO configured for SERVICE 3");
-  Serial.println("   ✓ GPIO 12: RED LED (OUTPUT)");
-  Serial.println("   ✓ GPIO 13: GREEN LED (OUTPUT)");
-  Serial.println("   ✓ GPIO 14: STREET LIGHT LED (OUTPUT)");
-  Serial.println("   ✓ All LEDs initialized and OFF\n");
+  Serial.println("   ✓ GPIO 15: MQ135 Analog Input (AO)");
+  Serial.println("   ✓ GPIO 2: Buzzer Alert (OUTPUT)");
+  Serial.println("   ✓ GPIO 12: RED Warning LED (OUTPUT)");
+  Serial.println("   ⚠ MQ135 requires warm-up for accurate readings\n");
   
-  printServiceHeader("LED TEST MODE");
+  printServiceHeader("AIR QUALITY MONITORING");
   
   service_start_time = millis();
   last_service_action = millis();
 }
 
 void runService3() {
-  // Toggle pattern every 1 second
-  if (millis() - last_service_action >= 1000) {
+  // Read sensor every 2 seconds
+  if (millis() - last_service_action >= 2000) {
     last_service_action = millis();
     
-    static int toggle_state = 0;
-    toggle_state = (toggle_state + 1) % 4;
+    int raw_value = analogRead(PIN_MQ135);
     
-    // Turn off all first
-    digitalWrite(LED_RED, LOW);
-    digitalWrite(LED_GREEN, LOW);
-    digitalWrite(LED_STREET_LIGHT, LOW);
+    // Simple conversion logic for demo (Value to Quality Percentage)
+    // MQ135 readings increase with more gas/smoke
+    int quality_pct = map(raw_value, 0, 4095, 0, 100);
     
-    // Turn on selected LED
-    if (toggle_state == 0) {
-      digitalWrite(LED_RED, HIGH);
-      Serial.println("🔴 RED LED ON");
-    } else if (toggle_state == 1) {
-      digitalWrite(LED_GREEN, HIGH);
-      Serial.println("🟢 GREEN LED ON");
-    } else if (toggle_state == 2) {
-      digitalWrite(LED_STREET_LIGHT, HIGH);
-      Serial.println("🔆 STREET LIGHT LED ON");
-    } else if (toggle_state == 3) {
-      digitalWrite(LED_RED, HIGH);
-      digitalWrite(LED_GREEN, HIGH);
-      digitalWrite(LED_STREET_LIGHT, HIGH);
-      Serial.println("🟡 ALL LEDS ON");
+    // Categorize Air Purity
+    const char* status = "UNKNOWN";
+    if (quality_pct < 20) status = "EXCELLENT";
+    else if (quality_pct < 40) status = "GOOD";
+    else if (quality_pct < 60) status = "MODERATE";
+    else status = "POOR (High Gases)";
+    
+    // Send Data Flag for Web Dashboard Parsing
+    Serial.print("DATA:AIR:");
+    Serial.println(quality_pct);
+    
+    // Detailed monitor output
+    Serial.print("🌬️ Air Quality Status: ");
+    Serial.print(status);
+    Serial.print(" (Value: ");
+    Serial.print(quality_pct);
+    Serial.println(" %)");
+    
+    // Buzzer Alert for every reading (Confirmation Beep)
+    digitalWrite(PIN_BUZZER, HIGH);
+    delay(100); 
+    digitalWrite(PIN_BUZZER, LOW);
+    
+    // Visual warning on hardware (Blink Red LED if POOR)
+    if (quality_pct > 60) {
+      digitalWrite(LED_RED, !digitalRead(LED_RED));
+      Serial.println("   ⚠️ ALERT: POOR AIR QUALITY!");
+    } else {
+      digitalWrite(LED_RED, LOW);
     }
   }
 }
@@ -402,15 +415,14 @@ void runService3() {
 void cleanupService3() {
   Serial.println("🧹 Cleaning up Service 3...");
   
-  // Turn off all LEDs
+  // Turn off warning LED and Buzzer
   digitalWrite(LED_RED, LOW);
-  digitalWrite(LED_GREEN, LOW);
-  digitalWrite(LED_STREET_LIGHT, LOW);
+  digitalWrite(PIN_BUZZER, LOW);
   
-  // Set all to INPUT (safe state)
+  // Safe GPIO states
+  pinMode(PIN_MQ135, INPUT);
+  pinMode(PIN_BUZZER, INPUT);
   pinMode(LED_RED, INPUT);
-  pinMode(LED_GREEN, INPUT);
-  pinMode(LED_STREET_LIGHT, INPUT);
   
   Serial.println("   ✓ Service 3 cleanup complete\n");
 }
@@ -562,7 +574,7 @@ void loop() {
         cleanupService1();
       } else if (current_service == SERVICE_STREETLIGHT) {
         cleanupService2();
-      } else if (current_service == SERVICE_DEMO) {
+      } else if (current_service == SERVICE_AIRQUALITY) {
         cleanupService3();
       } else if (current_service == SERVICE_WATERQUALITY) {
         cleanupService4();
@@ -584,7 +596,7 @@ void loop() {
           cleanupService1();
         } else if (current_service == SERVICE_STREETLIGHT) {
           cleanupService2();
-        } else if (current_service == SERVICE_DEMO) {
+        } else if (current_service == SERVICE_AIRQUALITY) {
           cleanupService3();
         } else if (current_service == SERVICE_WATERQUALITY) {
           cleanupService4();
@@ -605,7 +617,7 @@ void loop() {
           initService1();
         } else if (current_service == SERVICE_STREETLIGHT) {
           initService2();
-        } else if (current_service == SERVICE_DEMO) {
+        } else if (current_service == SERVICE_AIRQUALITY) {
           initService3();
         } else if (current_service == SERVICE_WATERQUALITY) {
           initService4();
@@ -633,7 +645,7 @@ void loop() {
     runService1();
   } else if (current_service == SERVICE_STREETLIGHT) {
     runService2();
-  } else if (current_service == SERVICE_DEMO) {
+  } else if (current_service == SERVICE_AIRQUALITY) {
     runService3();
   } else if (current_service == SERVICE_WATERQUALITY) {
     runService4();
