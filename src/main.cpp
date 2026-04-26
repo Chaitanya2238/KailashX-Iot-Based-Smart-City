@@ -15,6 +15,8 @@
 #define LED_RED 12              // Status indicator (always available)
 #define LED_GREEN 13            // Green LED (SERVICE 1) / LDR input (SERVICE 2)
 #define LED_STREET_LIGHT 14     // Street light LED (SERVICE 2 only)
+#define PIN_TDS 4               // TDS Water Sensor Analog Input (SERVICE 4)
+#define PIN_BUZZER 2            // Buzzer for Service 4 alerts
 
 // Camera pins for ESP32-CAM
 #define PWDN_GPIO_NUM 32
@@ -41,6 +43,7 @@
 #define SERVICE_EMERGENCY 1
 #define SERVICE_STREETLIGHT 2
 #define SERVICE_DEMO 3
+#define SERVICE_WATERQUALITY 4
 
 // ===========================
 // STATE VARIABLES
@@ -75,8 +78,11 @@ void displayMenu() {
   Serial.println("║  3) 🔦 LED TEST DEMO                      ║");
   Serial.println("║     (Toggle all LEDs)                     ║");
   Serial.println("║                                           ║");
+  Serial.println("║  4) 💧 WATER QUALITY MONITORING           ║");
+  Serial.println("║     (TDS Purity Sensor)                   ║");
+  Serial.println("║                                           ║");
   Serial.println("╠═══════════════════════════════════════════╣");
-  Serial.print("║ Enter service number (1-3): ");
+  Serial.print("║ Enter service number (1-4): ");
   Serial.println("              ║");
   Serial.println("╚═══════════════════════════════════════════╝\n");
 }
@@ -87,7 +93,7 @@ void printServiceHeader(const char* service_name) {
   Serial.println(service_name);
   Serial.println("║                                           ║");
   Serial.println("║ Press '0' to return to menu              ║");
-  Serial.println("║ Press '1'-'3' to switch service          ║");
+  Serial.println("║ Press '1'-'4' to switch service          ║");
   Serial.println("╚═══════════════════════════════════════════╝\n");
 }
 
@@ -410,6 +416,94 @@ void cleanupService3() {
 }
 
 // ===========================
+// SERVICE 4: WATER QUALITY MONITORING
+// ===========================
+void initService4() {
+  Serial.println("⏳ Initializing Water Quality Service...");
+  
+  // Setup GPIO - ONLY for this service
+  pinMode(PIN_TDS, INPUT);
+  pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, INPUT);         // Safe state
+  pinMode(LED_STREET_LIGHT, INPUT);  // Safe state
+  
+  digitalWrite(LED_RED, LOW);
+  digitalWrite(PIN_BUZZER, LOW);
+  
+  Serial.println("   ✓ GPIO configured for SERVICE 4");
+  Serial.println("   ✓ GPIO 4: TDS Analog Input (AO)");
+  Serial.println("   ✓ GPIO 2: Buzzer Alert (OUTPUT)");
+  Serial.println("   ✓ GPIO 12: RED Warning LED (OUTPUT)");
+  Serial.println("   ⚠ Ensure TDS probe is submerged for accurate readings\n");
+  
+  printServiceHeader("WATER QUALITY MONITORING");
+  
+  service_start_time = millis();
+  last_service_action = millis();
+}
+
+void runService4() {
+  // Read sensor every 2 seconds
+  if (millis() - last_service_action >= 2000) {
+    last_service_action = millis();
+    
+    int raw_value = analogRead(PIN_TDS);
+    
+    // Simple conversion logic (Voltage to PPM)
+    // Formula: TDS = (0.5 * Voltage^3 - 5.7 * Voltage^2 + 192.2 * Voltage)
+    // For demo, we use a simpler linear estimation:
+    float voltage = raw_value * (3.3 / 4095.0);
+    int ppm = (int)(voltage * 1000 / 2.3); 
+    
+    // Categorize Water Purity
+    const char* status = "UNKNOWN";
+    if (ppm < 50) status = "IDEAL (RO/Distilled)";
+    else if (ppm < 170) status = "GOOD (Drinking)";
+    else if (ppm < 400) status = "FAIR (Hard Water)";
+    else status = "POOR (Contaminated)";
+    
+    // Send Data Flag for Web Dashboard Parsing
+    Serial.print("DATA:TDS:");
+    Serial.println(ppm);
+    
+    // Detailed monitor output
+    Serial.print("💧 Water Quality Status: ");
+    Serial.print(status);
+    Serial.print(" (Value: ");
+    Serial.print(ppm);
+    Serial.println(" ppm)");
+    
+    // Buzzer Alert for every reading (Confirmation Beep)
+    digitalWrite(PIN_BUZZER, HIGH);
+    delay(100); 
+    digitalWrite(PIN_BUZZER, LOW);
+    
+    // Visual warning on hardware (Blink Red LED if POOR)
+    if (ppm > 400) {
+      digitalWrite(LED_RED, !digitalRead(LED_RED));
+    } else {
+      digitalWrite(LED_RED, LOW);
+    }
+  }
+}
+
+void cleanupService4() {
+  Serial.println("🧹 Cleaning up Service 4...");
+  
+  // Turn off warning LED and Buzzer
+  digitalWrite(LED_RED, LOW);
+  digitalWrite(PIN_BUZZER, LOW);
+  
+  // Safe GPIO states
+  pinMode(PIN_TDS, INPUT);
+  pinMode(PIN_BUZZER, INPUT);
+  pinMode(LED_RED, INPUT);
+  
+  Serial.println("   ✓ Service 4 cleanup complete\n");
+}
+
+// ===========================
 // SETUP
 // ===========================
 void setup() {
@@ -470,13 +564,15 @@ void loop() {
         cleanupService2();
       } else if (current_service == SERVICE_DEMO) {
         cleanupService3();
+      } else if (current_service == SERVICE_WATERQUALITY) {
+        cleanupService4();
       }
       
       current_service = SERVICE_MENU;
       last_service_switch = millis();
       clearSerialBuffer();
     }
-    else if (input >= '1' && input <= '3') {
+    else if (input >= '1' && input <= '4') {
       // Switch to new service
       int new_service = input - '0';
       
@@ -490,6 +586,8 @@ void loop() {
           cleanupService2();
         } else if (current_service == SERVICE_DEMO) {
           cleanupService3();
+        } else if (current_service == SERVICE_WATERQUALITY) {
+          cleanupService4();
         }
         
         delay(200);  // Let GPIO settle
@@ -509,6 +607,8 @@ void loop() {
           initService2();
         } else if (current_service == SERVICE_DEMO) {
           initService3();
+        } else if (current_service == SERVICE_WATERQUALITY) {
+          initService4();
         }
         
         last_service_switch = millis();
@@ -525,7 +625,7 @@ void loop() {
     // Show helpful timeout message every 5 seconds if waiting
     if (millis() - last_menu_message >= 5000) {
       last_menu_message = millis();
-      Serial.println("⏱️  Waiting for input... (enter 1, 2, or 3)\n");
+      Serial.println("⏱️  Waiting for input... (enter 1, 2, 3, or 4)\n");
     }
     
     delay(1000);  // Slow polling in menu
@@ -535,6 +635,8 @@ void loop() {
     runService2();
   } else if (current_service == SERVICE_DEMO) {
     runService3();
+  } else if (current_service == SERVICE_WATERQUALITY) {
+    runService4();
   }
   
   delay(100);  // Brief delay to prevent CPU spinning
