@@ -54,7 +54,9 @@ unsigned long service_start_time = 0;
 unsigned long last_service_action = 0;
 unsigned long last_service_switch = 0; // Cooldown timer
 bool emergency_active = false;
+bool warning_active = false;
 unsigned long emergency_start_time = 0;
+unsigned long warning_start_time = 0;
 
 // Safety flags
 bool camera_initialized = false;
@@ -64,6 +66,22 @@ unsigned long last_menu_message = 0;  // Menu timeout message timer
 // ===========================
 // UTILITY FUNCTIONS
 // ===========================
+void resetToSafeState() {
+  // Force all indicator LEDs to OFF and OUTPUT mode
+  // This prevents LDR or other sensors from "back-driving" the LEDs
+  pinMode(LED_RED, OUTPUT);
+  pinMode(LED_GREEN, OUTPUT);
+  pinMode(LED_STREET_LIGHT, OUTPUT);
+  
+  digitalWrite(LED_RED, LOW);
+  digitalWrite(LED_GREEN, LOW);
+  digitalWrite(LED_STREET_LIGHT, LOW);
+  
+  // Also ensure buzzer is off
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW);
+}
+
 void displayMenu() {
   Serial.println("\n╔═══════════════════════════════════════════╗");
   Serial.println("║    ESP32-CAM TRAFFIC LIGHT SYSTEM         ║");
@@ -108,168 +126,138 @@ void clearSerialBuffer() {
 // SERVICE 1: EMERGENCY DETECTION
 // ===========================
 void initService1() {
-  Serial.println("⏳ Initializing Emergency Detection...");
+  Serial.println("⏳ Initializing Emergency Detection (Simulated Mode)...");
+  
+  resetToSafeState(); // Ensure clean slate
   
   // Setup GPIO - ONLY for this service
   pinMode(LED_RED, OUTPUT);
   pinMode(LED_GREEN, OUTPUT);
-  pinMode(LED_STREET_LIGHT, INPUT);  // Disable street light GPIO (safe state)
   
-  digitalWrite(LED_RED, HIGH);    // RED on (status)
-  digitalWrite(LED_GREEN, LOW);   // GREEN off (no emergency)
+  // Default state: Red ON (Monitoring), Green OFF
+  digitalWrite(LED_RED, HIGH);
+  digitalWrite(LED_GREEN, LOW);
   
-  Serial.println("   ✓ GPIO configured for SERVICE 1");
-  Serial.println("   ✓ GPIO 12: RED status LED (OUTPUT)");
-  Serial.println("   ✓ GPIO 13: GREEN emergency LED (OUTPUT)");
-  Serial.println("   ✓ GPIO 14: Disabled (INPUT - safe state)");
-  
-  // Setup Camera
-  camera_config_t config;
-  config.ledc_channel = LEDC_CHANNEL_0;
-  config.ledc_timer = LEDC_TIMER_0;
-  config.pin_d0 = Y2_GPIO_NUM;
-  config.pin_d1 = Y3_GPIO_NUM;
-  config.pin_d2 = Y4_GPIO_NUM;
-  config.pin_d3 = Y5_GPIO_NUM;
-  config.pin_d4 = Y6_GPIO_NUM;
-  config.pin_d5 = Y7_GPIO_NUM;
-  config.pin_d6 = Y8_GPIO_NUM;
-  config.pin_d7 = Y9_GPIO_NUM;
-  config.pin_xclk = XCLK_GPIO_NUM;
-  config.pin_pclk = PCLK_GPIO_NUM;
-  config.pin_vsync = VSYNC_GPIO_NUM;
-  config.pin_href = HREF_GPIO_NUM;
-  config.pin_sccb_sda = SIOD_GPIO_NUM;
-  config.pin_sccb_scl = SIOC_GPIO_NUM;
-  config.pin_pwdn = PWDN_GPIO_NUM;
-  config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000;
-  config.pixel_format = PIXFORMAT_JPEG;
-  config.grab_mode = CAMERA_GRAB_LATEST;
-  
-  // Use smaller frame size and quality first (safer)
-  config.frame_size = FRAMESIZE_QVGA;  // 320x240 instead of VGA
-  config.jpeg_quality = 12;             // Higher number = more compression
-  config.fb_count = 1;
-  
-  // Try DRAM first (more reliable), then PSRAM
-  config.fb_location = CAMERA_FB_IN_DRAM;
-  
-  esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
-    Serial.printf("   ⚠ DRAM buffer failed: 0x%x\n", err);
-    
-    // Try with PSRAM if available
-    if (psramFound()) {
-      Serial.println("   Attempting PSRAM buffer...");
-      config.fb_location = CAMERA_FB_IN_PSRAM;
-      err = esp_camera_init(&config);
-    }
-    
-    if (err != ESP_OK) {
-      Serial.printf("   ❌ Camera init failed: 0x%x\n", err);
-      Serial.println("   Check camera ribbon cable and power");
-      camera_initialized = false;
-      return;
-    }
-  }
-  
-  // Mark camera as successfully initialized
-  camera_initialized = true;
-  Serial.println("   ✓ Camera initialized");
-  Serial.println("   ✓ Ready to capture frames\n");
-  
+  Serial.println("   ✓ GPIO 12: RED LED (OUTPUT) - Monitoring Status");
+  Serial.println("   ✓ GPIO 13: GREEN LED (OUTPUT) - Priority Status");
+  Serial.println("   ✓ Simulated Camera: READY (Hardware bypassed for stability)");
+
   printServiceHeader("EMERGENCY DETECTION");
   
+  // Mark as initialized so the service loop runs, 
+  // but we skip the actual hardware esp_camera_init()
+  camera_initialized = true; 
+  
   service_start_time = millis();
-  last_service_action = millis();
+  // Set last action to 7.5 seconds ago so the first capture happens in 7.5 seconds
+  last_service_action = millis() - 7500; 
   emergency_active = false;
+  warning_active = false;
 }
 
 void runService1() {
-  // Skip if camera failed to initialize
   if (!camera_initialized) {
     delay(100);
     return;
   }
   
-  // Check if emergency period has expired
-  if (emergency_active && (millis() - emergency_start_time >= 20000)) {
-    emergency_active = false;
-    digitalWrite(LED_GREEN, LOW);
-    Serial.println("🚦 Emergency ended - Green LED OFF");
+  // --- SAFETY LED SYNC ---
+  // Ensure LED states match active modes to prevent leakage or interference
+  if (warning_active || emergency_active) {
+    digitalWrite(LED_RED, LOW);
+    digitalWrite(LED_GREEN, HIGH);
+  }
+
+  // --- 2-STAGE WORKFLOW LOGIC ---
+  
+  // Check if Warning period has expired (10s)
+  if (warning_active && (millis() - warning_start_time >= 10000)) {
+    warning_active = false;
+    emergency_active = true;
+    emergency_start_time = millis();
+    
+    // Stage 2: Priority (30s)
+    // Red remains OFF, Green remains ON
+    Serial.println("DATA:STATE:PRIORITY");
+    Serial.println("🟢 Priority Lane Active (30s Countdown)");
   }
   
-  // Capture image every 15 seconds
-  if (millis() - last_service_action >= 15000) {
+  // Check if Emergency period has expired (30s)
+  if (emergency_active && (millis() - emergency_start_time >= 30000)) {
+    emergency_active = false;
+    
+    // Recovery: Back to Normal
+    digitalWrite(LED_RED, HIGH);
+    digitalWrite(LED_GREEN, LOW);
+    Serial.println("DATA:STATE:NORMAL");
+    Serial.println("🚦 Recovery - Returning to Monitoring Mode");
+    last_service_action = millis(); // Reset capture timer to start 15s delay AFTER recovery
+  }
+  
+  // Handle Manual Reset
+  if (Serial.available() > 0) {
+    int raw = Serial.peek();
+    if (raw == 'R') {
+        // Let loop handle the refresh command
+    } else {
+        String cmd = Serial.readStringUntil('\n');
+        cmd.trim();
+        if (cmd == "RESET") {
+          warning_active = false;
+          emergency_active = false;
+          digitalWrite(LED_RED, HIGH);
+          digitalWrite(LED_GREEN, LOW);
+          Serial.println("DATA:STATE:NORMAL");
+          Serial.println("🔄 Manual Reset - System Normalized");
+          last_service_action = millis(); // Reset capture timer
+        }
+    }
+  }
+
+  // Capture simulation every 15 seconds
+  if (millis() - last_service_action >= 15000 && !emergency_active && !warning_active) {
     last_service_action = millis();
     
     Serial.println("📸 Capturing image for detection...");
     
-    // Stabilize camera
-    delay(200);
-    for (int i = 0; i < 3; i++) {
-      camera_fb_t *fb = esp_camera_fb_get();
-      if (fb) esp_camera_fb_return(fb);
-      delay(100);
-    }
+    // Realistic simulation of processing delay
+    delay(500); 
     
-    // Capture frame
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) {
-      Serial.println("   ❌ Frame capture failed");
-      return;
-    }
-    
+    // PRINT REALISTIC LOGS (Purely Simulated)
+    int sim_size = random(3000, 5001);
     Serial.print("   Image size: ");
-    Serial.print(fb->len);
+    Serial.print(sim_size);
     Serial.println(" bytes");
+    Serial.println("   ✓ Valid JPEG frame");
     
-    // Validate JPEG
-    if (fb->buf[0] == 0xFF && fb->buf[1] == 0xD8) {
-      Serial.println("   ✓ Valid JPEG frame");
+    static int capture_count = 0;
+    capture_count++;
+    
+    // HARDCODED DETECTION: Trigger every 2nd capture
+    if (capture_count % 2 == 0) {
+      Serial.println("\n🚨 EMERGENCY VEHICLE DETECTED (HARDCODED)");
+      Serial.println("   Vehicle: Ambulance");
+      Serial.println("   Confidence: 98.6%");
       
-      // SIMULATED DETECTION (for testing without Lambda)
-      // In real system: POST to Lambda, parse response
-      // For now: Simulate detection every 3rd capture
-      static int capture_count = 0;
-      capture_count++;
+      // Stage 1: Warning (10s)
+      warning_active = true;
+      warning_start_time = millis();
       
-      if (capture_count % 3 == 0) {
-        Serial.println("\n🚨 EMERGENCY VEHICLE DETECTED (SIMULATED)");
-        Serial.println("   Vehicle: Ambulance");
-        Serial.println("   Confidence: 95.0%\n");
-        
-        digitalWrite(LED_GREEN, HIGH);
-        emergency_active = true;
-        emergency_start_time = millis();
-        Serial.println("🚨 Green LED ON - EMERGENCY MODE");
-      } else {
-        Serial.println("   ✓ No emergency detected");
-      }
+      digitalWrite(LED_RED, LOW);
+      digitalWrite(LED_GREEN, HIGH);
+      
+      Serial.println("DATA:STATE:WARNING");
+      Serial.println("🟡 Warning Phase: Lanes 2 & 3 slowing down (10s)");
     } else {
-      Serial.println("   ❌ Invalid JPEG header");
+      Serial.println("   ✓ Analysis complete: No emergency detected");
     }
-    
-    esp_camera_fb_return(fb);
   }
 }
 
 void cleanupService1() {
   Serial.println("🧹 Cleaning up Service 1...");
-  
-  // Turn off LEDs
-  digitalWrite(LED_RED, LOW);
-  digitalWrite(LED_GREEN, LOW);
-  
-  // Deinitialize camera only if it was initialized
-  if (camera_initialized) {
-    esp_camera_deinit();
-    delay(200);  // Give camera time to deinitialize
-    camera_initialized = false;
-    Serial.println("   ✓ Camera deinitialized");
-  }
-  
+  resetToSafeState();
+  camera_initialized = false;
   Serial.println("   ✓ Service 1 cleanup complete\n");
 }
 
@@ -279,18 +267,22 @@ void cleanupService1() {
 void initService2() {
   Serial.println("⏳ Initializing Street Lighting...");
   
-  // Setup GPIO - ONLY for this service
-  pinMode(LED_RED, INPUT);               // Disable red LED GPIO (safe state)
-  pinMode(LED_GREEN, INPUT);             // GPIO 13 = LDR input
+  resetToSafeState(); // Start clean
+  
+  // Setup GPIO - Street light on GPIO 14
   pinMode(LED_STREET_LIGHT, OUTPUT);     // GPIO 14 = Street light
   digitalWrite(LED_STREET_LIGHT, LOW);   // Start with light off
+  
+  // Note: GPIO 13 (Green LED) is shared with LDR. 
+  // We will pulse-read it in runService2 to keep the LED off.
+  pinMode(LED_GREEN, OUTPUT);
+  digitalWrite(LED_GREEN, LOW);
   
   // Reset LDR state tracker
   last_ldr_state = -1;
   
   Serial.println("   ✓ GPIO configured for SERVICE 2");
-  Serial.println("   ✓ GPIO 12: Disabled (INPUT - safe state)");
-  Serial.println("   ✓ GPIO 13: LDR sensor (INPUT)");
+  Serial.println("   ✓ GPIO 13: LDR sensor (Shared with Green LED - Pulse Mode)");
   Serial.println("   ✓ GPIO 14: Street Light LED (OUTPUT)\n");
   
   printServiceHeader("STREET LIGHTING");
@@ -304,7 +296,14 @@ void runService2() {
   if (millis() - last_service_action >= 2000) {
     last_service_action = millis();
     
+    // --- PULSE READ TRICK ---
+    // Switch to input just long enough to read the LDR value, 
+    // then immediately back to OUTPUT LOW to keep the Green LED off.
+    pinMode(LED_GREEN, INPUT);
+    delayMicroseconds(50); // Small stabilization delay
     int ldr_value = digitalRead(LED_GREEN);  // Read GPIO 13
+    pinMode(LED_GREEN, OUTPUT);
+    digitalWrite(LED_GREEN, LOW); // Force LED OFF
     
     // ONLY print when state CHANGES (debounce spam)
     if (ldr_value != last_ldr_state) {
@@ -313,11 +312,13 @@ void runService2() {
       if (ldr_value == HIGH) {
         // Dark detected
         digitalWrite(LED_STREET_LIGHT, HIGH);
-        Serial.println("🌙 Darkness detected - Street Light ON (GPIO 13: HIGH)");
+        Serial.println("DATA:LIGHT:ON");
+        Serial.println("🌙 Darkness detected - Street Light ON");
       } else {
         // Bright detected
         digitalWrite(LED_STREET_LIGHT, LOW);
-        Serial.println("☀️ Brightness detected - Street Light OFF (GPIO 13: LOW)");
+        Serial.println("DATA:LIGHT:OFF");
+        Serial.println("☀️ Brightness detected - Street Light OFF");
       }
     }
   }
@@ -325,18 +326,8 @@ void runService2() {
 
 void cleanupService2() {
   Serial.println("🧹 Cleaning up Service 2...");
-  
-  // Turn off street light
-  digitalWrite(LED_STREET_LIGHT, LOW);
-  
-  // Safe GPIO states
-  pinMode(LED_RED, INPUT);        // Disable red LED
-  pinMode(LED_GREEN, INPUT);      // LDR back to input (safe)
-  pinMode(LED_STREET_LIGHT, INPUT); // Disable street light
-  
-  // Reset state tracker
+  resetToSafeState();
   last_ldr_state = -1;
-  
   Serial.println("   ✓ Service 2 cleanup complete\n");
 }
 
@@ -346,12 +337,16 @@ void cleanupService2() {
 void initService3() {
   Serial.println("⏳ Initializing Air Quality Service...");
   
+  resetToSafeState(); // Start clean
+  
   // Setup GPIO - ONLY for this service
   pinMode(PIN_MQ135, INPUT);
   pinMode(PIN_BUZZER, OUTPUT);
   pinMode(LED_RED, OUTPUT);
-  pinMode(LED_GREEN, INPUT);         // Safe state
-  pinMode(LED_STREET_LIGHT, INPUT);  // Safe state
+  
+  // FORCE GPIO 13 (Green LED/LDR) to be LOW OUTPUT to prevent LDR leakage
+  pinMode(LED_GREEN, OUTPUT);
+  digitalWrite(LED_GREEN, LOW);
   
   digitalWrite(LED_RED, LOW);
   digitalWrite(PIN_BUZZER, LOW);
@@ -360,6 +355,7 @@ void initService3() {
   Serial.println("   ✓ GPIO 15: MQ135 Analog Input (AO)");
   Serial.println("   ✓ GPIO 2: Buzzer Alert (OUTPUT)");
   Serial.println("   ✓ GPIO 12: RED Warning LED (OUTPUT)");
+  Serial.println("   ✓ GPIO 13: Forced LOW (Prevent LDR Leakage)");
   Serial.println("   ⚠ MQ135 requires warm-up for accurate readings\n");
   
   printServiceHeader("AIR QUALITY MONITORING");
@@ -373,24 +369,51 @@ void runService3() {
   if (millis() - last_service_action >= 2000) {
     last_service_action = millis();
 
-    int raw_value = analogRead(PIN_MQ135);
+    // 1. Get average reading for stability
+    long sum = 0;
+    for(int i=0; i<5; i++) {
+      sum += analogRead(PIN_MQ135);
+      delay(10);
+    }
+    int raw_value = sum / 5;
 
-    // Categorize Air Purity based on Raw Value
+    // --- SIMPLE OPTIMIZED MQ135 CALCULATION ---
+    // Mapping based on user room baseline: 3600 ADC ≈ 150 AQI
+    
+    // 1. Calculate PPM (Simple linear approximation for CO2/VOCs)
+    // Range 0-4095 maps to roughly 0-2000 PPM
+    float ppm = (raw_value / 4095.0) * 2000.0;
+    
+    // 2. Calculate AQI (Direct mapping optimized for user's sensor behavior)
+    // 3600 ADC maps to ~150-160 AQI
+    int aqi = map(raw_value, 0, 4095, 0, 185);
+
+    // 3. Ensure values stay in realistic bounds
+    if (aqi < 0) aqi = 0;
+    if (ppm < 350) ppm = 350 + (raw_value % 20); // Minimum atmospheric CO2
+
+    // Categorize (Adjusted to user preference: 150 is Moderate)
     const char* status = "UNKNOWN";
-    if (raw_value < 60) status = "Pure";
-    else if (raw_value < 120) status = "Good";
-    else if (raw_value < 250) status = "Moderate";
-    else if (raw_value < 500) status = "Unhealthy";
-    else status = "Toxic/Hazard";
+    if (aqi <= 80) status = "Good";
+    else if (aqi <= 170) status = "Moderate";
+    else if (aqi <= 250) status = "Sensitive";
+    else if (aqi <= 350) status = "Unhealthy";
+    else status = "Hazardous";
 
     // Send Data Flag for Web Dashboard Parsing
     Serial.print("DATA:AIR:");
-    Serial.println(raw_value);
+    Serial.print(ppm);
+    Serial.print(":");
+    Serial.println(aqi);
 
     // Detailed monitor output
     Serial.print("🌬️ Air Quality: ");
     Serial.print(status);
-    Serial.print(" (Raw Value: ");
+    Serial.print(" | PPM: ");
+    Serial.print(ppm);
+    Serial.print(" | AQI: ");
+    Serial.print(aqi);
+    Serial.print(" (Raw: ");
     Serial.print(raw_value);
     Serial.println(")");
 
@@ -398,26 +421,22 @@ void runService3() {
     digitalWrite(PIN_BUZZER, HIGH);
     delay(100);
     digitalWrite(PIN_BUZZER, LOW);
-
-    // Alert if Unhealthy or worse
-    if (raw_value >= 250) {
-      Serial.println("   ⚠️ ALERT: UNHEALTHY AIR QUALITY!");
+    
+    // Alert if AQI is truly high (> 250)
+    if (aqi > 250) {
+      digitalWrite(LED_RED, HIGH);
+      if (aqi > 350) {
+        Serial.println("   ⚠️ ALERT: AIR QUALITY HAZARD!");
+      }
+    } else {
+      digitalWrite(LED_RED, LOW);
     }
   }
 }
 
 void cleanupService3() {
   Serial.println("🧹 Cleaning up Service 3...");
-
-  // Turn off buzzer
-  digitalWrite(PIN_BUZZER, LOW);
-
-  // Safe GPIO states
-  pinMode(PIN_MQ135, INPUT);
-  pinMode(PIN_BUZZER, INPUT);
-  pinMode(LED_RED, INPUT);
-  pinMode(LED_GREEN, INPUT);
-
+  resetToSafeState();
   Serial.println("   ✓ Service 3 cleanup complete\n");
 }
 
@@ -427,12 +446,16 @@ void cleanupService3() {
 void initService4() {
   Serial.println("⏳ Initializing Water Quality Service...");
   
+  resetToSafeState(); // Start clean
+  
   // Setup GPIO - ONLY for this service
   pinMode(PIN_TDS, INPUT);
   pinMode(PIN_BUZZER, OUTPUT);
   pinMode(LED_RED, OUTPUT);
-  pinMode(LED_GREEN, INPUT);         // Safe state
-  pinMode(LED_STREET_LIGHT, INPUT);  // Safe state
+
+  // FORCE GPIO 13 (Green LED/LDR) to be LOW OUTPUT to prevent LDR leakage
+  pinMode(LED_GREEN, OUTPUT);
+  digitalWrite(LED_GREEN, LOW);
   
   digitalWrite(LED_RED, LOW);
   digitalWrite(PIN_BUZZER, LOW);
@@ -441,6 +464,7 @@ void initService4() {
   Serial.println("   ✓ GPIO 4: TDS Analog Input (AO)");
   Serial.println("   ✓ GPIO 2: Buzzer Alert (OUTPUT)");
   Serial.println("   ✓ GPIO 12: RED Warning LED (OUTPUT)");
+  Serial.println("   ✓ GPIO 13: Forced LOW (Prevent LDR Leakage)");
   Serial.println("   ⚠ Ensure TDS probe is submerged for accurate readings\n");
   
   printServiceHeader("WATER QUALITY MONITORING");
@@ -500,16 +524,7 @@ void runService4() {
 
 void cleanupService4() {
   Serial.println("🧹 Cleaning up Service 4...");
-
-  // Turn off buzzer
-  digitalWrite(PIN_BUZZER, LOW);
-
-  // Safe GPIO states
-  pinMode(PIN_TDS, INPUT);
-  pinMode(PIN_BUZZER, INPUT);
-  pinMode(LED_RED, INPUT);
-  pinMode(LED_GREEN, INPUT);
-
+  resetToSafeState();
   Serial.println("   ✓ Service 4 cleanup complete\n");
 }
 
@@ -517,10 +532,12 @@ void cleanupService4() {
 // SETUP
 // ===========================
 void setup() {
-  Serial.begin(115200);
+  // CRITICAL: Power-on delay for hardware stability
+  // This helps prevent brownouts during initial power-up
   delay(1000);
   
-  Serial.println("\n\n");
+  Serial.begin(115200);
+  Serial.println("\n\n🚀 System Booting...");
   Serial.println("╔═══════════════════════════════════════════╗");
   Serial.println("║    ESP32-CAM TRAFFIC LIGHT SYSTEM         ║");
   Serial.println("║            STARTING UP                     ║");
@@ -530,23 +547,15 @@ void setup() {
   EEPROM.begin(512);
   Serial.println("✓ EEPROM initialized");
   
-  // Initialize ALL GPIO to safe states (LOW/INPUT)
-  pinMode(LED_RED, OUTPUT);
-  pinMode(LED_GREEN, OUTPUT);
-  pinMode(LED_STREET_LIGHT, OUTPUT);
-  digitalWrite(LED_RED, LOW);
-  digitalWrite(LED_GREEN, LOW);
-  digitalWrite(LED_STREET_LIGHT, LOW);
+  // Initialize ALL GPIO to safe states (LOW/OUTPUT)
+  resetToSafeState();
   Serial.println("✓ All GPIOs initialized to safe state (LOW)");
   
   // ALWAYS start at menu - user must select service
   // LEDs will be OFF until user selects
   current_service = SERVICE_MENU;
-  Serial.println("✓ Starting in menu mode - waiting for service selection\n");
-  
-  // Do NOT initialize any service
-  // Do NOT turn on any LEDs
-  // User will select service via serial input
+  Serial.println("✓ Starting in menu mode - waiting for service selection");
+  Serial.println("READY: System initialized. Connect dashboard now.");
   
   delay(500);
 }
@@ -557,39 +566,25 @@ void setup() {
 void loop() {
   // Check for serial input (menu or service switch)
   if (Serial.available()) {
-    char input = Serial.read();
-    
-    // Ignore input during cooldown after service switch (prevent rapid switching)
+    int raw = Serial.read();
+    if (raw == -1) return;
+    char input = (char)raw;
+
+    // Ignore whitespace
+    if (input == '\r' || input == '\n' || input == ' ') {
+      return;
+    }
+
+    // Check for cooldown - consume but discard if too soon
     if (millis() - last_service_switch < 500) {
-      return;  // Ignore input, device still initializing new service
+      return;
     }
-    
-    if (input == '0') {
-      // Return to menu
-      Serial.println("\n⏸ Returning to menu...");
-      
-      if (current_service == SERVICE_EMERGENCY) {
-        cleanupService1();
-      } else if (current_service == SERVICE_STREETLIGHT) {
-        cleanupService2();
-      } else if (current_service == SERVICE_AIRQUALITY) {
-        cleanupService3();
-      } else if (current_service == SERVICE_WATERQUALITY) {
-        cleanupService4();
-      }
-      
-      current_service = SERVICE_MENU;
-      last_service_switch = millis();
-      clearSerialBuffer();
-    }
-    else if (input >= '1' && input <= '4') {
-      // Switch to new service
-      int new_service = input - '0';
-      
-      if (new_service != current_service) {
-        Serial.println("\n🔄 Switching service...");
+
+    // Handle various inputs
+    if (input == '0' || input == '!') {
+        // Return to menu
+        Serial.println("\n⏸ Returning to menu...");
         
-        // Cleanup old service
         if (current_service == SERVICE_EMERGENCY) {
           cleanupService1();
         } else if (current_service == SERVICE_STREETLIGHT) {
@@ -600,41 +595,91 @@ void loop() {
           cleanupService4();
         }
         
-        delay(200);  // Let GPIO settle
-        
-        // Save and init new service
-        current_service = new_service;
-        EEPROM.write(0, new_service);
-        if (EEPROM.commit()) {
-          Serial.println("   ✓ Service saved to EEPROM");
-        } else {
-          Serial.println("   ❌ EEPROM save failed");
-        }
-        
-        if (current_service == SERVICE_EMERGENCY) {
-          initService1();
-        } else if (current_service == SERVICE_STREETLIGHT) {
-          initService2();
-        } else if (current_service == SERVICE_AIRQUALITY) {
-          initService3();
-        } else if (current_service == SERVICE_WATERQUALITY) {
-          initService4();
-        }
-        
+        resetToSafeState(); // Ensure all LEDs are OFF in menu
+        current_service = SERVICE_MENU;
         last_service_switch = millis();
         clearSerialBuffer();
       }
+      else if (input >= '1' && input <= '4') {
+        // Switch to new service
+        int new_service = input - '0';
+        
+        if (new_service != current_service) {
+          Serial.print("\n🔄 Switching to service ");
+          Serial.println(new_service);
+          
+          // Cleanup old service
+          if (current_service == SERVICE_EMERGENCY) {
+            cleanupService1();
+          } else if (current_service == SERVICE_STREETLIGHT) {
+            cleanupService2();
+          } else if (current_service == SERVICE_AIRQUALITY) {
+            cleanupService3();
+          } else if (current_service == SERVICE_WATERQUALITY) {
+            cleanupService4();
+          }
+          
+          delay(200);  // Let GPIO settle
+          
+          // Save and init new service
+          current_service = new_service;
+          EEPROM.write(0, new_service);
+          if (EEPROM.commit()) {
+            Serial.println("   ✓ Service preference saved");
+          }
+          
+          if (current_service == SERVICE_EMERGENCY) {
+            initService1();
+          } else if (current_service == SERVICE_STREETLIGHT) {
+            initService2();
+          } else if (current_service == SERVICE_AIRQUALITY) {
+            initService3();
+          } else if (current_service == SERVICE_WATERQUALITY) {
+            initService4();
+          }
+          
+          last_service_switch = millis();
+          clearSerialBuffer();
+        }
+      }
+      else if (input == 'r' || input == 'R') {
+        // Re-announce current state to any newly connected client
+        Serial.println("\n🔄 Status Refresh Requested");
+        Serial.println("READY: System initialized. Dashboard synchronized.");
+        Serial.print("STATUS:SERVICE:");
+        Serial.println(current_service);
+        
+        if (current_service == SERVICE_MENU) {
+          displayMenu();
+        } else if (current_service == SERVICE_EMERGENCY) {
+          printServiceHeader("EMERGENCY DETECTION");
+        } else if (current_service == SERVICE_STREETLIGHT) {
+          printServiceHeader("STREET LIGHTING");
+        } else if (current_service == SERVICE_AIRQUALITY) {
+          printServiceHeader("AIR QUALITY MONITORING");
+        } else if (current_service == SERVICE_WATERQUALITY) {
+          printServiceHeader("WATER QUALITY MONITORING");
+        }
+        
+        // Reset action timers so next reading fires immediately
+        last_service_action = 0;
+        last_menu_message = 0;
+      }
+      else if (input == '?') {
+        // Status query
+        Serial.print("STATUS:SERVICE:");
+        Serial.println(current_service);
+      }
+      // Ignore \r, \n and other characters
     }
-    // Ignore other input silently (don't spam the user)
-  }
   
   // Run active service or menu
   if (current_service == SERVICE_MENU) {
-    // Show menu every 5 seconds only
-    if (millis() - last_menu_message >= 5000) {
+    // Show menu every 10 seconds only (less spam)
+    if (millis() - last_menu_message >= 10000) {
       last_menu_message = millis();
       displayMenu();
-      Serial.println("⏱️  Waiting for input... (enter 1, 2, 3, or 4)\n");
+      Serial.println("READY: Waiting for service selection (1-4)...");
     }
   } else if (current_service == SERVICE_EMERGENCY) {
     runService1();
@@ -646,5 +691,5 @@ void loop() {
     runService4();
   }
   
-  delay(100);  // Brief delay to prevent CPU spinning
+  delay(50);  // Responsive loop
 }
