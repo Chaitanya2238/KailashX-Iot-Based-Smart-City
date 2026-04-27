@@ -4,11 +4,22 @@
 .vscode/launch.json
 .vscode/ipch
 
+# Web dependencies and build artifacts
+**/node_modules/
+**/.next/
+**/out/
+**/build/
+**/dist/
+.pnp
+.pnp.js
+
 # Secrets and credentials
 include/secrets.h
 *.pem
 *.key
 *.crt
+.env*
+!.env.example
 
 # Build artifacts
 *.bin
@@ -23,3 +34,4 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+*.log
