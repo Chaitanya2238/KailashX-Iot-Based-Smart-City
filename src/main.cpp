@@ -372,58 +372,52 @@ void runService3() {
   // Read sensor every 2 seconds
   if (millis() - last_service_action >= 2000) {
     last_service_action = millis();
-    
+
     int raw_value = analogRead(PIN_MQ135);
-    
-    // Simple conversion logic for demo (Value to Quality Percentage)
-    // MQ135 readings increase with more gas/smoke
-    int quality_pct = map(raw_value, 0, 4095, 0, 100);
-    
-    // Categorize Air Purity
+
+    // Categorize Air Purity based on Raw Value
     const char* status = "UNKNOWN";
-    if (quality_pct < 20) status = "EXCELLENT";
-    else if (quality_pct < 40) status = "GOOD";
-    else if (quality_pct < 60) status = "MODERATE";
-    else status = "POOR (High Gases)";
-    
+    if (raw_value < 60) status = "Pure";
+    else if (raw_value < 120) status = "Good";
+    else if (raw_value < 250) status = "Moderate";
+    else if (raw_value < 500) status = "Unhealthy";
+    else status = "Toxic/Hazard";
+
     // Send Data Flag for Web Dashboard Parsing
     Serial.print("DATA:AIR:");
-    Serial.println(quality_pct);
-    
+    Serial.println(raw_value);
+
     // Detailed monitor output
-    Serial.print("🌬️ Air Quality Status: ");
+    Serial.print("🌬️ Air Quality: ");
     Serial.print(status);
-    Serial.print(" (Value: ");
-    Serial.print(quality_pct);
-    Serial.println(" %)");
-    
+    Serial.print(" (Raw Value: ");
+    Serial.print(raw_value);
+    Serial.println(")");
+
     // Buzzer Alert for every reading (Confirmation Beep)
     digitalWrite(PIN_BUZZER, HIGH);
-    delay(100); 
+    delay(100);
     digitalWrite(PIN_BUZZER, LOW);
-    
-    // Visual warning on hardware (Blink Red LED if POOR)
-    if (quality_pct > 60) {
-      digitalWrite(LED_RED, !digitalRead(LED_RED));
-      Serial.println("   ⚠️ ALERT: POOR AIR QUALITY!");
-    } else {
-      digitalWrite(LED_RED, LOW);
+
+    // Alert if Unhealthy or worse
+    if (raw_value >= 250) {
+      Serial.println("   ⚠️ ALERT: UNHEALTHY AIR QUALITY!");
     }
   }
 }
 
 void cleanupService3() {
   Serial.println("🧹 Cleaning up Service 3...");
-  
-  // Turn off warning LED and Buzzer
-  digitalWrite(LED_RED, LOW);
+
+  // Turn off buzzer
   digitalWrite(PIN_BUZZER, LOW);
-  
+
   // Safe GPIO states
   pinMode(PIN_MQ135, INPUT);
   pinMode(PIN_BUZZER, INPUT);
   pinMode(LED_RED, INPUT);
-  
+  pinMode(LED_GREEN, INPUT);
+
   Serial.println("   ✓ Service 3 cleanup complete\n");
 }
 
@@ -459,59 +453,63 @@ void runService4() {
   // Read sensor every 2 seconds
   if (millis() - last_service_action >= 2000) {
     last_service_action = millis();
-    
+
     int raw_value = analogRead(PIN_TDS);
+
+    // CALIBRATED TDS CALCULATION (Quadratic fit for your hardware)
+    // Offset: 400 raw (Dry baseline)
+    // Scale: 514 raw -> 150 ppm, 1200 raw -> 1500 ppm
+    int x = raw_value - 400;
+    if (x < 0) x = 0; 
     
-    // Simple conversion logic (Voltage to PPM)
-    // Formula: TDS = (0.5 * Voltage^3 - 5.7 * Voltage^2 + 192.2 * Voltage)
-    // For demo, we use a simpler linear estimation:
-    float voltage = raw_value * (3.3 / 4095.0);
-    int ppm = (int)(voltage * 1000 / 2.3); 
-    
-    // Categorize Water Purity
+    // Formula: ppm = 0.000823 * x^2 + 1.216 * x
+    int ppm = (int)(0.000823 * x * x + 1.216 * x);
+
+    // Combined Water Quality Logic
     const char* status = "UNKNOWN";
-    if (ppm < 50) status = "IDEAL (RO/Distilled)";
-    else if (ppm < 170) status = "GOOD (Drinking)";
-    else if (ppm < 400) status = "FAIR (Hard Water)";
-    else status = "POOR (Contaminated)";
-    
+    if (ppm <= 10) status = "DRY / NO WATER";
+    else if (ppm < 50) status = "IDEAL (RO/Distilled) - Low Minerals / Flat Taste";
+    else if (ppm < 150) status = "EXCELLENT (Drinking) - Perfect Mineral Balance";
+    else if (ppm < 300) status = "GOOD (Drinking) - Safe with Pleasant Mineral Taste";
+    else if (ppm < 500) status = "FAIR (Acceptable) - Hard Water / Metallic Taste";
+    else if (ppm < 1000) status = "POOR (Contaminated) - High Minerals / Needs Treatment";
+    else status = "UNACCEPTABLE - Unfit for Regular Drinking";
+
     // Send Data Flag for Web Dashboard Parsing
     Serial.print("DATA:TDS:");
     Serial.println(ppm);
-    
+
     // Detailed monitor output
-    Serial.print("💧 Water Quality Status: ");
+    Serial.print("💧 Water Quality: ");
     Serial.print(status);
-    Serial.print(" (Value: ");
+    Serial.print(" (");
     Serial.print(ppm);
     Serial.println(" ppm)");
-    
+
     // Buzzer Alert for every reading (Confirmation Beep)
     digitalWrite(PIN_BUZZER, HIGH);
-    delay(100); 
+    delay(100);
     digitalWrite(PIN_BUZZER, LOW);
-    
-    // Visual warning on hardware (Blink Red LED if POOR)
-    if (ppm > 400) {
-      digitalWrite(LED_RED, !digitalRead(LED_RED));
-    } else {
-      digitalWrite(LED_RED, LOW);
+
+    // Alert if POOR or worse
+    if (ppm >= 500) {
+      Serial.println("   ⚠️ ALERT: POOR WATER QUALITY!");
     }
   }
 }
 
 void cleanupService4() {
   Serial.println("🧹 Cleaning up Service 4...");
-  
-  // Turn off warning LED and Buzzer
-  digitalWrite(LED_RED, LOW);
+
+  // Turn off buzzer
   digitalWrite(PIN_BUZZER, LOW);
-  
+
   // Safe GPIO states
   pinMode(PIN_TDS, INPUT);
   pinMode(PIN_BUZZER, INPUT);
   pinMode(LED_RED, INPUT);
-  
+  pinMode(LED_GREEN, INPUT);
+
   Serial.println("   ✓ Service 4 cleanup complete\n");
 }
 
@@ -632,15 +630,12 @@ void loop() {
   
   // Run active service or menu
   if (current_service == SERVICE_MENU) {
-    displayMenu();
-    
-    // Show helpful timeout message every 5 seconds if waiting
+    // Show menu every 5 seconds only
     if (millis() - last_menu_message >= 5000) {
       last_menu_message = millis();
+      displayMenu();
       Serial.println("⏱️  Waiting for input... (enter 1, 2, 3, or 4)\n");
     }
-    
-    delay(1000);  // Slow polling in menu
   } else if (current_service == SERVICE_EMERGENCY) {
     runService1();
   } else if (current_service == SERVICE_STREETLIGHT) {
