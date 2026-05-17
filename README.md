@@ -565,7 +565,14 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 ---
 
-## 🙏 Acknowledgments
+## � Contributors
+
+**Jay Tomar**
+- Contributing to the KailashX project development and implementation
+
+---
+
+## �🙏 Acknowledgments
 
 - **Espressif Systems** - ESP32 platform
 - **Amazon Web Services** - Cloud services (IoT Core, Lambda, Rekognition)
